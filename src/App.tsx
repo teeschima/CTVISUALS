@@ -4,6 +4,7 @@ import { Event, Photo, Video, HighlightVideo, Photobook, EventType } from "./typ
 import { RestorationLab } from "./components/RestorationLab";
 import { HighlightStudio } from "./components/HighlightStudio";
 import { PhotobookBuilder } from "./components/PhotobookBuilder";
+import { PhotobookAIPlatform } from "./components/PhotobookAIPlatform";
 import { 
   Camera, 
   Sparkles, 
@@ -38,7 +39,7 @@ import {
 
 export default function App() {
   // Application routing / view state
-  const [currentView, setCurrentView] = useState<"home" | "guest" | "dashboard">("home");
+  const [currentView, setCurrentView] = useState<"home" | "guest" | "dashboard" | "photobooks-ai">("home");
   const [dashboardTab, setDashboardTab] = useState<"overview" | "gallery" | "search" | "restore" | "highlights" | "photobooks" | "storage">("overview");
   
   // Real active event we are viewing/updating
@@ -282,6 +283,15 @@ export default function App() {
             }`}
           >
             Owner Dashboard
+          </button>
+          <button
+            onClick={() => setCurrentView("photobooks-ai")}
+            className={`px-4 py-1.5 rounded-full text-xs font-semibold cursor-pointer transition flex items-center gap-1.5 ${
+              currentView === "photobooks-ai" ? "bg-gradient-to-r from-violet-600 to-pink-600 text-white shadow-md shadow-violet-900/35" : "text-slate-400 hover:text-white"
+            }`}
+          >
+            <Sparkles className="h-3.5 w-3.5 text-amber-300 shrink-0" />
+            AI Photobook Studio
           </button>
         </nav>
       </header>
@@ -1185,7 +1195,7 @@ export default function App() {
               {/* TAB 6: PHOTOBOOK BUILDER */}
               {dashboardTab === "photobooks" && (
                 <div className="animate-fade-in">
-                  <PhotobookBuilder event={activeEvent} onAddPhotobook={handleAddPhotobook} />
+                  <PhotobookAIPlatform />
                 </div>
               )}
 
@@ -1228,6 +1238,13 @@ export default function App() {
               )}
 
             </div>
+          </div>
+        )}
+
+        {/* VIEW 4: AI-POWERED PHOTOBOOK CREATOR STUDIO PLATFORM */}
+        {currentView === "photobooks-ai" && (
+          <div className="animate-fade-in">
+            <PhotobookAIPlatform />
           </div>
         )}
 
