@@ -1,0 +1,10 @@
+{
+  "name": "CT VIEW",
+  "description": "Collaborative event photo sharing & luxury photobook platform with AI video highlights, image restoration, and face recognition.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
