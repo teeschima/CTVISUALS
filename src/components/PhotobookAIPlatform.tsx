@@ -36,18 +36,10 @@ import {
   UserCheck
 } from "lucide-react";
 
-// Mock preset photo URLs representing premium high fidelity images
-const MOCK_GALLERY_IMAGES = [
-  { id: "img-1", url: "https://picsum.photos/id/1025/800/600", category: "Behind The Scenes", caption: "Groom final touch-ups", resolution: "4200 x 2800", rating: 4.9 },
-  { id: "img-2", url: "https://picsum.photos/id/64/800/600", category: "Event Opening", caption: "Breathtaking Lekki layout and florals", resolution: "3800 x 2600", rating: 4.8 },
-  { id: "img-3", url: "https://picsum.photos/id/1062/800/600", category: "Event Opening", caption: "Guests arrival & traditional greetings", resolution: "4500 x 3000", rating: 4.7 },
-  { id: "img-4", url: "https://picsum.photos/id/129/800/600", category: "Main Event", caption: "Bride and Groom traditional cup shared", resolution: "5100 x 3400", rating: 5.0 },
-  { id: "img-5", url: "https://picsum.photos/id/249/800/600", category: "Main Event", caption: "Family dancing and spraying money", resolution: "4000 x 2600", rating: 4.9 },
-  { id: "img-6", url: "https://picsum.photos/id/338/800/600", category: "Emotional Moments", caption: "Aunties crying with supreme happiness", resolution: "3605 x 2400", rating: 4.8 },
-  { id: "img-7", url: "https://picsum.photos/id/319/800/600", category: "Emotional Moments", caption: "Joyous laughter after the toast", resolution: "4200 x 2800", rating: 4.9 },
-  { id: "img-8", url: "https://picsum.photos/id/1024/800/600", category: "Grand Finale", caption: "Closing joint prayers & congratulations", resolution: "4400 x 2933", rating: 4.85 },
-  { id: "img-9", url: "https://picsum.photos/id/325/800/600", category: "Grand Finale", caption: "Aso-ebi girls squad final portrait", resolution: "4800 x 3200", rating: 5.0 },
-];
+// Gallery starts empty — replace with real client data by selecting a local folder or
+// pasting shareable cloud links (Google Drive / Dropbox / OneDrive). This file
+// no longer ships mock images so the app is ready for real client data.
+const MOCK_GALLERY_IMAGES: Array<any> = [];
 
 export function PhotobookAIPlatform() {
   // Navigation / Tab states
@@ -59,7 +51,11 @@ export function PhotobookAIPlatform() {
   const [uploadedFiles, setUploadedFiles] = useState<File[]>([]);
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [uploadPercent, setUploadPercent] = useState<number>(0);
-  const [totalPhotosCount, setTotalPhotosCount] = useState<number>(240); // default simulated
+  const [totalPhotosCount, setTotalPhotosCount] = useState<number>(0);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [cloudLinkModalOpen, setCloudLinkModalOpen] = useState<boolean>(false);
+  const [cloudLinksText, setCloudLinksText] = useState<string>("");
+  const [dragActive, setDragActive] = useState<boolean>(false);
   
   // STEP 2: AI Audit States
   const [isAuditing, setIsAuditing] = useState<boolean>(false);
@@ -115,6 +111,7 @@ export function PhotobookAIPlatform() {
 
   // Run Folder/ZIP simulation upload
   const triggerSimulatedUpload = () => {
+    // For legacy flows we keep a small visual indicator but prefer real uploads.
     setIsUploading(true);
     setUploadPercent(0);
     const interval = setInterval(() => {
@@ -123,7 +120,8 @@ export function PhotobookAIPlatform() {
           clearInterval(interval);
           setTimeout(() => {
             setIsUploading(false);
-            setTotalPhotosCount(350);
+            // Use actual uploaded file count when available
+            setTotalPhotosCount((prevCount) => Math.max(prevCount, uploadedFiles.length));
             setCreatorStep(2); // Auto-advance to AI deep audit
           }, 400);
           return 100;
@@ -131,6 +129,118 @@ export function PhotobookAIPlatform() {
         return prev + 12;
       });
     }, 150);
+  };
+  // Handle selection from local folder (supports folder selection when browser allows)
+  const handleLocalFiles = (files: FileList | null) => {
+    if (!files) return;
+    const fileArr = Array.from(files).filter(f => f.type.startsWith("image/"));
+    if (fileArr.length === 0) return;
+    setUploadedFiles(prev => [...prev, ...fileArr]);
+    setTotalPhotosCount(prev => prev + fileArr.length);
+    // Advance to next step automatically when files are selected
+    setCreatorStep(2);
+  };
+
+  const openFolderPicker = () => {
+    if (fileInputRef.current) {
+      fileInputRef.current.click();
+    }
+  };
+
+  // Drag-and-drop helpers: traverse dropped directories (webkitEntry) and collect files
+  const handleDataTransfer = async (dataTransfer: DataTransfer | null) => {
+    if (!dataTransfer) return;
+    const items = dataTransfer.items;
+    if (!items) {
+      // fallback: use files
+      handleLocalFiles(dataTransfer.files);
+      return;
+    }
+
+    const collectedFiles: File[] = [];
+
+    const traverseEntry = (entry: any, path = "") => {
+      return new Promise<void>((resolve) => {
+        if (!entry) return resolve();
+        if (entry.isFile) {
+          entry.file((file: File) => {
+            if (file.type.startsWith("image/")) collectedFiles.push(file);
+            resolve();
+          }, () => resolve());
+        } else if (entry.isDirectory) {
+          const dirReader = entry.createReader();
+          const readEntries = () => {
+            dirReader.readEntries((entries: any[]) => {
+              if (!entries || entries.length === 0) return resolve();
+              Promise.all(entries.map((en) => traverseEntry(en, path + entry.name + "/"))).then(() => readEntries()).catch(() => readEntries());
+            }, () => resolve());
+          };
+          readEntries();
+        } else {
+          resolve();
+        }
+      });
+    };
+
+    // iterate items
+    const promises: Promise<void>[] = [];
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      // @ts-ignore
+      const entry = it.webkitGetAsEntry ? it.webkitGetAsEntry() : it.getAsEntry ? it.getAsEntry() : null;
+      if (entry) {
+        promises.push(traverseEntry(entry));
+      } else {
+        const f = it.getAsFile && it.getAsFile();
+        if (f && f.type && f.type.startsWith("image/")) collectedFiles.push(f);
+      }
+    }
+
+    await Promise.all(promises);
+    if (collectedFiles.length) {
+      setUploadedFiles(prev => [...prev, ...collectedFiles]);
+      setTotalPhotosCount(prev => prev + collectedFiles.length);
+      setCreatorStep(2);
+    } else if (dataTransfer.files && dataTransfer.files.length) {
+      handleLocalFiles(dataTransfer.files);
+    }
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragActive(false);
+    await handleDataTransfer(e.dataTransfer);
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragActive(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragActive(false);
+  };
+
+  // Accept pasted cloud links (user-provided share links). We add them as remote URLs
+  // and let the UI show previews where possible.
+  const handleImportCloudLinks = () => {
+    const links = cloudLinksText.split(/\s|,|;/).map(s => s.trim()).filter(Boolean);
+    const newUrls = links.map((url, idx) => ({
+      id: `remote-${Date.now()}-${idx}`,
+      url,
+      category: "Imported",
+      caption: url.split("/").pop() || "Cloud image",
+      resolution: "-",
+      rating: 0,
+    }));
+    // Store them by creating fake File-like entries via url objects in state
+    // We'll map them into galleryImages below.
+    setUploadedFiles(prev => prev.concat(newUrls as any));
+    setTotalPhotosCount(prev => prev + newUrls.length);
+    setCloudLinksText("");
+    setCloudLinkModalOpen(false);
+    setCreatorStep(2);
   };
 
   // Run Simulated AI Core Audits (Duplicates, closed eyes, smile metrics etc.)
@@ -223,6 +333,46 @@ export function PhotobookAIPlatform() {
     }, 200);
   };
 
+  // Derived gallery images for rendering: either real File objects (with object URLs)
+  // or remote url placeholders that were pasted by the user.
+  const [objectUrls, setObjectUrls] = useState<string[]>([]);
+
+  useEffect(() => {
+    // Create object URLs for File entries to preview
+    const urls: string[] = [];
+    uploadedFiles.forEach((f: any) => {
+      if (f instanceof File) {
+        const url = URL.createObjectURL(f);
+        urls.push(url);
+      }
+    });
+    // cleanup previous
+    objectUrls.forEach(u => {
+      try { URL.revokeObjectURL(u); } catch (e) {}
+    });
+    setObjectUrls(urls);
+    return () => {
+      urls.forEach(u => { try { URL.revokeObjectURL(u); } catch (e) {} });
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uploadedFiles]);
+
+  // Build gallery images combining local files (object URLs) and imported remote links
+  const galleryImages = (() => {
+    const arr: any[] = [];
+    let fileIdx = 0;
+    uploadedFiles.forEach((entry: any) => {
+      if (entry instanceof File) {
+        const url = objectUrls[fileIdx] || URL.createObjectURL(entry);
+        arr.push({ id: `f-${fileIdx}-${entry.name}`, url, category: "Imported", caption: entry.name, resolution: "-", rating: 0 });
+        fileIdx += 1;
+      } else if (entry && typeof entry === "object" && entry.url) {
+        arr.push({ id: entry.id || `r-${arr.length}`, url: entry.url, category: entry.category || "Imported", caption: entry.caption || entry.url, resolution: entry.resolution || '-', rating: entry.rating || 0 });
+      }
+    });
+    return arr;
+  })();
+
   // Font typography sets preview
   const getTypographyClasses = () => {
     switch (fontCombo) {
@@ -248,7 +398,30 @@ export function PhotobookAIPlatform() {
           <div>
             <h2 className="text-sm font-serif font-bold text-white tracking-wider">MOMENTFLOW PHOTOBOOK PLATFORM</h2>
             <p className="text-[10px] text-violet-300 font-mono uppercase tracking-widest">Autonomous Luxury Layout Engine ✦ Native Cloud Render</p>
-          </div>
+
+          {cloudLinkModalOpen && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+              <div className="w-full max-w-2xl bg-[#08101A] border border-slate-800 rounded-2xl p-6">
+                <div className="flex justify-between items-center pb-3">
+                  <h4 className="text-sm font-semibold">Import Cloud Links</h4>
+                  <button onClick={() => setCloudLinkModalOpen(false)} className="text-xs text-slate-400 hover:text-white">Close</button>
+                </div>
+                <p className="text-[12px] text-slate-400 mb-3">Paste shareable Google Drive / Dropbox / OneDrive links (one per line or comma separated). The app will attempt to import referenced images.</p>
+                <textarea
+                  value={cloudLinksText}
+                  onChange={(e) => setCloudLinksText(e.target.value)}
+                  placeholder="https://drive.google.com/drive/folders/...\nhttps://www.dropbox.com/s/...."
+                  className="w-full bg-slate-900 border border-slate-800 text-white rounded-lg p-3 text-xs h-36 resize-none"
+                />
+
+                <div className="flex justify-end gap-3 pt-4">
+                  <button onClick={() => setCloudLinkModalOpen(false)} className="px-3 py-2 text-xs border border-slate-800 rounded-lg text-slate-300">Cancel</button>
+                  <button onClick={handleImportCloudLinks} className="px-4 py-2 text-xs bg-gradient-to-r from-violet-600 to-pink-600 text-white rounded-lg">Import Links</button>
+                </div>
+              </div>
+            </div>
+          )}
+
         </div>
 
         <div className="flex gap-2">
@@ -524,31 +697,48 @@ export function PhotobookAIPlatform() {
 
                   {/* Simulated Upload drag frame */}
                   {uploadSource === "folder" ? (
-                    <div 
-                      onClick={triggerSimulatedUpload}
-                      className="border-2 border-dashed border-violet-900/30 bg-slate-950/80 p-12 rounded-2xl text-center space-y-4 cursor-pointer hover:border-pink-500 transition"
-                    >
-                      <Upload className="h-10 w-10 text-pink-500 mx-auto animate-bounce" />
-                      <div className="space-y-1 text-xs">
-                        <p className="text-white font-semibold">Drag and Drop Folder containing 50-500+ photos</p>
-                        <p className="text-slate-400">Click to upload raw .ZIP archives, folder trees, or select individual JPEG / PNG formats</p>
+                    <>
+                      <div 
+                        onClick={openFolderPicker}
+                        onDrop={handleDrop}
+                        onDragOver={handleDragOver}
+                        onDragEnter={handleDragOver}
+                        onDragLeave={handleDragLeave}
+                        className={`border-2 border-dashed border-violet-900/30 bg-slate-950/80 p-12 rounded-2xl text-center space-y-4 cursor-pointer hover:border-pink-500 transition ${dragActive ? 'ring-2 ring-pink-500/40' : ''}`}
+                      >
+                        <Upload className="h-10 w-10 text-pink-500 mx-auto animate-bounce" />
+                        <div className="space-y-1 text-xs">
+                          <p className="text-white font-semibold">Drag and Drop Folder containing 50-500+ photos</p>
+                          <p className="text-slate-400">Click to select a folder or drop files/folders here (ZIP, JPEG, PNG). The browser will import images.</p>
+                        </div>
+                        <div className="text-[10px] text-slate-500">Maximum limit 2 GB per session upload in Pro Quota.</div>
                       </div>
-                      <div className="text-[10px] text-slate-500">Maximum limit 2 GB per session upload in Pro Quota.</div>
-                    </div>
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        onChange={(e) => handleLocalFiles(e.target.files)}
+                        style={{ display: 'none' }}
+                        // @ts-ignore webkitdirectory is supported in Chromium-based browsers for folder selection
+                        webkitdirectory="true"
+                        directory={true}
+                        multiple
+                        accept="image/*,application/zip"
+                      />
+                    </>
                   ) : (
                     <div className="p-8 bg-slate-950/60 rounded-xl border border-slate-900 text-center space-y-4">
                       <FolderLock className="h-8 w-8 text-[#9887C9] mx-auto" />
                       <div className="space-y-1">
-                        <div className="text-xs font-semibold text-white">OAuth Secure Cloud Interfacing</div>
+                        <div className="text-xs font-semibold text-white">Cloud Import (paste share link)</div>
                         <p className="text-[11px] justify-center leading-relaxed text-slate-400 max-w-sm mx-auto">
-                          Import and stream images directly from your cloud directories with the secure Google Drive, Dropbox, or OneDrive API.
+                          Paste a shareable folder or file link from Google Drive / Dropbox / OneDrive and we will import the referenced images.
                         </p>
                       </div>
                       <button 
-                        onClick={triggerSimulatedUpload}
+                        onClick={() => setCloudLinkModalOpen(true)}
                         className="px-5 py-2.5 bg-violet-950/80 hover:bg-violet-900 text-white text-xs font-semibold rounded-xl tracking-wide cursor-pointer transition shadow"
                       >
-                        Authorize & Select Folder Path
+                        Paste Cloud Link(s)
                       </button>
                     </div>
                   )}
@@ -721,7 +911,7 @@ export function PhotobookAIPlatform() {
 
                   {/* Dynamic mapped photos picker */}
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                    {MOCK_GALLERY_IMAGES
+                    {galleryImages
                       .filter((img) => activeCategory === "All" || img.category === activeCategory)
                       .map((img) => {
                         const isChosen = selectedPhotos.includes(img.id);
@@ -757,9 +947,9 @@ export function PhotobookAIPlatform() {
                       })}
                   </div>
 
-                  <div className="flex justify-between items-center text-xs pt-4 border-t border-slate-900">
+                    <div className="flex justify-between items-center text-xs pt-4 border-t border-slate-900">
                     <span className="text-slate-400 font-mono">
-                      Selected <span className="text-white font-bold">{selectedPhotos.length}</span> of {MOCK_GALLERY_IMAGES.length} story segments candidates
+                      Selected <span className="text-white font-bold">{selectedPhotos.length}</span> of {galleryImages.length} story segments candidates
                     </span>
 
                     <button
@@ -1021,7 +1211,11 @@ export function PhotobookAIPlatform() {
                               </div>
 
                               <div className="max-w-[130px] mx-auto aspect-square rounded-full overflow-hidden border-2 border-stone-300 shadow">
-                                <img src="https://picsum.photos/id/1025/300/300" alt="Cover photo" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                                {galleryImages[0]?.url ? (
+                                  <img src={galleryImages[0].url} alt={galleryImages[0].caption || 'Cover photo'} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                                ) : (
+                                  <div className="w-full h-full bg-slate-800 flex items-center justify-center text-xs text-slate-400">No cover image</div>
+                                )}
                               </div>
 
                               <div className="border-t border-stone-200 pt-3 text-[10px] font-mono text-stone-450">
@@ -1049,7 +1243,11 @@ export function PhotobookAIPlatform() {
                               {/* Right sheet: cover candidates photo */}
                               <div className="space-y-3 h-full flex flex-col justify-between py-2 pl-3">
                                 <div className="aspect-[4/3] rounded-lg overflow-hidden border border-stone-250 shadow-sm">
-                                  <img src="https://picsum.photos/id/64/400/300" alt="Spread illustration" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                                  {galleryImages[1]?.url ? (
+                                    <img src={galleryImages[1].url} alt={galleryImages[1].caption || 'Spread illustration'} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                                  ) : (
+                                    <div className="w-full h-full bg-slate-800 flex items-center justify-center text-xs text-slate-400">No image</div>
+                                  )}
                                 </div>
                                 <div className="flex justify-between items-center text-[9px] tracking-wide text-stone-450 font-mono">
                                   <span>MEMORIES AT LEKKI</span>
@@ -1067,7 +1265,11 @@ export function PhotobookAIPlatform() {
                               {/* Left sheet: image layout */}
                               <div className="space-y-3 h-full flex flex-col justify-between py-2 pr-3 border-r border-stone-150">
                                 <div className="aspect-[4/3] rounded-lg overflow-hidden border border-stone-250 shadow-sm relative col-span-1">
-                                  <img src="https://picsum.photos/id/1062/400/300" alt="Spread illustration" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                                  {galleryImages[2]?.url ? (
+                                    <img src={galleryImages[2].url} alt={galleryImages[2].caption || 'Spread illustration'} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                                  ) : (
+                                    <div className="w-full h-full bg-slate-800 flex items-center justify-center text-xs text-slate-400">No image</div>
+                                  )}
                                 </div>
                                 <div className="flex justify-between items-center text-[9px] tracking-wide text-stone-450 font-mono">
                                   <span>PAGE 3 ✦ TIMELINE CEREMONY</span>

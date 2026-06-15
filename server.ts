@@ -2,6 +2,29 @@ import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
+import { google } from "googleapis";
+import fs from "fs";
+import crypto from "crypto";
+
+// Simple token store persisted to tokens.json for development use only.
+const TOKENS_FILE = path.join(process.cwd(), 'tokens.json');
+let tokenStore: Record<string, any> = {};
+try {
+  if (fs.existsSync(TOKENS_FILE)) {
+    const raw = fs.readFileSync(TOKENS_FILE, 'utf8');
+    tokenStore = JSON.parse(raw || '{}');
+  }
+} catch (e) {
+  tokenStore = {};
+}
+
+function persistTokens() {
+  try {
+    fs.writeFileSync(TOKENS_FILE, JSON.stringify(tokenStore, null, 2));
+  } catch (e) {
+    console.warn('Failed to persist tokens', e);
+  }
+}
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -117,6 +140,127 @@ app.post("/api/restore/submit", (req, res) => {
       status: "DONE"
     });
   }, 2000);
+});
+
+// ------------------------------------------------------------------
+// Google Drive OAuth scaffold
+// ------------------------------------------------------------------
+// Notes: This is a scaffold for OAuth flows using googleapis. Install
+// the dependency: `npm install googleapis` and set the environment vars
+// `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_OAUTH_REDIRECT`.
+// The redirect should point back to this server's `/auth/google/callback`.
+
+function getGoogleOAuthClient() {
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  const redirect = process.env.GOOGLE_OAUTH_REDIRECT || `http://localhost:${PORT}/auth/google/callback`;
+  if (!clientId || !clientSecret) throw new Error('Missing Google OAuth credentials.');
+  return new google.auth.OAuth2(clientId, clientSecret, redirect);
+}
+
+// Redirect user to Google's OAuth consent screen (scaffold)
+// Start OAuth flow: returns an auth URL and a generated state key the client can poll with.
+app.get('/auth/google/start', (req, res) => {
+  try {
+    const state = crypto.randomBytes(12).toString('hex');
+    const oauth2Client = getGoogleOAuthClient();
+    const scopes = ['https://www.googleapis.com/auth/drive.readonly'];
+    const authUrl = oauth2Client.generateAuthUrl({
+      access_type: 'offline',
+      scope: scopes,
+      prompt: 'consent',
+      state,
+    });
+    // Initialize empty slot in the token store
+    tokenStore[state] = { status: 'pending' };
+    persistTokens();
+    return res.json({ authUrl, state });
+  } catch (err: any) {
+    return res.status(500).send({ error: err.message });
+  }
+});
+
+// Backwards-compatible redirect endpoint (not used by client start flow but kept)
+app.get('/auth/google', (req, res) => {
+  try {
+    const oauth2Client = getGoogleOAuthClient();
+    const scopes = ['https://www.googleapis.com/auth/drive.readonly'];
+    const authUrl = oauth2Client.generateAuthUrl({
+      access_type: 'offline',
+      scope: scopes,
+      prompt: 'consent',
+      state: req.query.state as string | undefined,
+    });
+    res.redirect(authUrl);
+  } catch (err: any) {
+    res.status(500).send({ error: err.message });
+  }
+});
+
+// OAuth callback endpoint — exchanges code for tokens and returns them
+app.get('/auth/google/callback', async (req, res) => {
+  try {
+    const code = req.query.code as string;
+    if (!code) return res.status(400).send({ error: 'Missing code.' });
+    const oauth2Client = getGoogleOAuthClient();
+    const { tokens } = await oauth2Client.getToken(code);
+    // In production you should associate tokens with a user session and store securely
+    // store tokens under state if provided
+    const state = req.query.state as string | undefined;
+    if (state) {
+      tokenStore[state] = { status: 'ok', tokens, createdAt: Date.now() };
+      persistTokens();
+    }
+
+    // Redirect to a tiny page that will notify the opener window and close
+    const redirectPage = `/auth/success?state=${encodeURIComponent(state || '')}`;
+    return res.redirect(redirectPage);
+  } catch (err: any) {
+    console.error('Google OAuth callback error', err);
+    return res.status(500).json({ error: err.message || 'OAuth failure' });
+  }
+});
+
+// Serve a tiny success page that posts the state back to the opener window
+app.get('/auth/success', (req, res) => {
+  const state = req.query.state as string | undefined;
+  res.setHeader('Content-Type', 'text/html');
+  res.send(`
+    <!doctype html>
+    <html>
+    <head><meta charset="utf-8"><title>Auth Success</title></head>
+    <body style="background:#071021;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;font-family:Arial,Helvetica,sans-serif;">
+      <div style="text-align:center;max-width:560px;padding:20px;">
+        <h2>Authentication successful</h2>
+        <p>You may close this window and return to the application.</p>
+        <script>
+          try {
+            if (window.opener) {
+              window.opener.postMessage({ type: 'google-auth', state: '${state || ''}' }, '*');
+            }
+          } catch (e) {}
+          setTimeout(() => window.close(), 900);
+        </script>
+      </div>
+    </body>
+    </html>
+  `);
+});
+
+// Example Drive listing endpoint — pass `access_token` as query or in Authorization header
+app.get('/api/drive/list', async (req, res) => {
+  try {
+    const accessToken = req.query.access_token || req.headers.authorization?.toString().replace('Bearer ', '');
+    if (!accessToken) return res.status(400).json({ error: 'Missing access_token' });
+    const oauth2Client = new google.auth.OAuth2();
+    oauth2Client.setCredentials({ access_token: accessToken as string });
+    const drive = google.drive({ version: 'v3', auth: oauth2Client });
+    const resp = await drive.files.list({ pageSize: 100, fields: 'files(id,name,mimeType,webViewLink,thumbnailLink)' });
+    return res.json({ files: resp.data.files || [] });
+  } catch (err: any) {
+    console.error('Drive list error', err);
+    return res.status(500).json({ error: err.message || 'Drive error' });
+  }
 });
 
 // Vite Middleware for development
